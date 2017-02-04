@@ -1,0 +1,216 @@
+---
+title: 'Exploratory Data Analysis:  Credit Card Fraud'
+author: "Peter Caya"
+date: "January 25, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache= TRUE,echo = FALSE,message = FALSE,warning = FALSE)
+set.seed(13)
+setwd("C:/Users/Peter Caya/Dropbox/Kaggle/Credit Card FRaud/")
+library(pacman)
+p_load(data.table,dplyr,ggplot2, reshape,dtplyr,knitr,dplyr,caret,PRROC)
+CC <- fread(input = "creditcard.csv")
+```
+
+## Distribution  of Data
+
+```{r summary}1
+# Count NA values:
+NA_Counta <-apply(X = CC,MARGIN = 2,FUN = function(X){sum(is.na(X))})
+# Determine the distribution of each of the different factors
+Melted_Data <- melt(CC)
+Melted_Frauds <- melt(CC[which(CC$Class==1),])
+Melted_Legit <-  melt(CC[which(!CC$Class==1),])
+Melted_Data$Type <- "All Data"
+Melted_Frauds$Type <- "Frauds"
+Melted_Legit$Type <- "Normal"
+Plot_Data <-rbind(Melted_Data,Melted_Legit,Melted_Frauds)
+ggplot(data = Plot_Data %>% filter(grepl(x=variable,"V")) )+geom_boxplot(aes(x=variable,y=value ))+facet_grid(Type~.)+ggtitle("Features of Credit Card Data")+xlab("Features")
+```
+
+
+
+```{r, timeplot}
+ggplot(data = Plot_Data %>% filter(grepl(x=variable,"Time")) )   +geom_boxplot(aes(x=variable,y=value ))+facet_grid(.~Type)+ggtitle("Features of Credit Card Data")+xlab("Features")
+```
+
+
+
+Plot three shows an appreciable difference in the spending habits displayed between fraudulent and nonfraudulent transactions.  The legitimate transactions display a wider range of values than the fraudulent transactions.  Some of this appears to be related to outliers however.  
+
+```{r, Amount Plot}
+ggplot(data = Plot_Data %>% filter(grepl(x=variable,"Amount")) )   +geom_boxplot(aes(x=variable,y=value ))+facet_grid(.~Type)+ggtitle("Transaction Amounts")+xlab("")
+```
+
+
+
+To get a better idea where values depart between the fraudulent and non-fraudelent data, it would be helpful to determine where the factors depart the most:
+
+
+```{r, summary2}
+# sum_stats <- CC %>% group_by(Class) %>% summarise_at(.cols = vars(starts_with("V")), .funs = summary)  
+sum_stats <- CC %>% group_by(Class) %>% summarise_each( funs(summary))  
+
+sum_stats<-as.data.frame(t(sum_stats %>% select(-Class)))
+
+colnames(sum_stats)<-c("Min0","1Q0","2Q0","Mean0","3Q0","Max0","Min1","1Q1","2Q1","Mean1","3Q1","Max1")
+diff_table <- data.frame(   sum_stats$Min0-sum_stats$Min1,     sum_stats$`1Q0`- sum_stats$`1Q1`,     sum_stats$`2Q0`- sum_stats$`2Q1`,
+                            sum_stats$Mean0- sum_stats$Mean1    ,   sum_stats$`3Q0`- sum_stats$`3Q1`,  sum_stats$Max0- sum_stats$Max1  )
+names(diff_table)<-c("Min","1Q","2Q","Mean","3Q","Max")
+rownames(diff_table)<-rownames(sum_stats)
+kable(diff_table,digits = 2,align ="c",caption="Summary Statistics for Difference Between Features for Legitimate and Fraudulent Transactions")
+```
+
+We can see that the standard deviation is 
+
+```{r, summary3}
+# sum_stats <- CC %>% group_by(Class) %>% summarise_at(.cols = vars(starts_with("V")), .funs = summary)  
+sum_stats <- CC %>% group_by(Class) %>% summarise_each( funs(sd))  
+
+sum_stats<-as.data.frame(t(sum_stats %>% select(-Class))) 
+hold <-rownames(sum_stats)
+colnames(sum_stats)<-c("Legitimate Transactions","Fraudulent Transactions")
+sum_stats<-sum_stats %>% mutate(`Standard Deviation Difference` = `Legitimate Transactions`- `Fraudulent Transactions`)
+rownames(sum_stats)<-hold
+kable(sum_stats,digits = 2,align ="c",caption="Standard Deviations for Difference Between Features for Legitimate and Fraudulent Transactions")
+```
+
+
+
+
+
+
+
+
+## Measuring Accuracy
+
+One of the major issues with this dataset is that fraudulent transactions take up `r round(sum(CC$Class==1)/dim(CC)[1] *100 ,2)  `% of the data.  This level precludes the use of conventional classification accuracy.  A trivial model which automatically classifies a sample from our dataset as legitimate would have a very high accuracy while at the same time being completely useless for our purposes.
+
+To measure the accuracy of proposed models I will employ the following measures of classification accuracy:
+
+1. Kappa
+2. Confusion matrices.
+3. The area under the ROC curve.
+4. The area under the precision recall curve.
+
+
+```{r}
+training_indices<-sample(1:dim(CC)[1],dim(CC)[1]*.8)
+# testing_indices<-sample(1:dim(CC)[1],dim(CC)[1]/10)
+
+
+training_data <- CC[training_indices,]
+testing_data <- CC[-training_indices,]
+# featurePlot(x = training_data[1:5,],y = mini_CC$Class,plot = "pairs")
+
+```
+
+## Sampling Methods
+
+Two common approaches used to correct for imbalances in data are oversampling and undersampling.  These methods process the data and add bias to the training dataset to compensate for data imbalance.  In this scenario oversampling will involve taking a sample of $N$ different values from the data involving legitimate transactions and then selecting a large enough number of duplicate transactions from the fraudulent data to produce a dataset which contains a 50% balance of either category.  Undersampling will involve sampling $N$ observations from the fraudulent data and then selecting a subset of the legitimate transactions which equal $N$.  
+
+Either of these methods has drawbacks.  There are clear outliers evident in the features so undersampling is likely to ignore these potentionally datapoints.  On the other hand, the use of oversampling for such an unbalanced dataset may be questionable due to potention overuse of the small dataset of fraudulent data.  
+
+As a result, both oversampled and undersampled datasets are used.
+
+
+```{r sampling_types}
+train_under  <- downSample(training_data[,-31,with=FALSE],as.factor(training_data$Class))
+train_over <-   upSample(training_data[,-31,with=FALSE],as.factor(training_data$Class))
+```
+
+
+
+## Data Compression
+
+Because of the number of variables present in this problem, a preliminary procedure I will use is applying principal components analysis to the training dataset I defined in the last section.  By using this method I isolated `r 5` which I will use to train a preliminary model using logistic regression.
+
+
+```{r}
+# str(training_data)
+training_PCA <- prcomp(training_data %>% select(-Class) ,center = TRUE,scale. = TRUE)
+hold <- data.frame(1:length(training_PCA$sdev)[1],training_PCA$sdev)
+names(hold)<-c("Variable","Value")
+ggplot(hold)+geom_line(aes(x=Variable,y=Value)) +ggtitle("Plot of Training Data for Principal Components")+xlab("")+ylab("Principal Components")
+
+
+```
+
+## Logistic Regression
+
+
+```{r}
+
+prim_model_over <- train(data = train_over,
+                                 method = "glm",
+                                 family = "binomial",
+                                 Class ~  . - Class)
+```
+
+
+```{r}
+
+prim_model_under <- train(data = train_under,
+                                 method = "glm",
+                                 family = "binomial",
+                                 Class ~  . - Class)
+```
+
+```{r}
+
+prim_model <- train(data = training_data,
+                                 method = "glm",
+                                 family = "binomial",
+                                 Class ~  . - Class)
+```
+
+Logistic regression was employed on the thirty factors in the training dataset to train a model to identify fraudulent transactions.  Bootstrapping was applied twenty-five times to the data sets.   First, the oversampled data is used, and then the undersampled data is used.  We can see that both datasets produce similar results with a $\kappa$ equal to 90% and an accuracy in excess of 90%.  
+
+#### Results From Oversampling
+
+```{r}
+print(prim_model_over)
+print(confusionMatrix(prim_model_over))
+```
+
+#### Results From Undersampling
+
+```{r}
+print(prim_model_under)
+print(confusionMatrix(prim_model_under))
+```
+
+#### Results Using Initial Data
+
+```{r}
+print(prim_model)
+print(confusionMatrix(prim_model))
+```
+
+### Results on testing data.
+
+
+
+
+```{r}
+prim_over_res<- predict(object = prim_model_over,newdata =testing_data )
+confusionMatrix(prim_over_res,testing_data$Class)
+
+```
+
+
+```{r}
+prim_under_res<- predict(object = prim_model_under,newdata =testing_data )
+confusionMatrix(prim_under_res,testing_data$Class)
+
+```
+
+
+
+```{r}
+prim_res<- predict(object = prim_model,newdata =testing_data )
+confusionMatrix(prim_res,testing_data$Class)
+
+```
