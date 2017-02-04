@@ -8,7 +8,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, cache= TRUE,echo = FALSE,message = FALSE,warning = FALSE)
 set.seed(13)
-setwd("C:/Users/Peter Caya/Dropbox/Kaggle/Credit Card FRaud/")
+setwd("C:/Users/Peter Caya/Dropbox/Kaggle/CCFraud")
 library(pacman)
 p_load(data.table,dplyr,ggplot2, reshape,dtplyr,knitr,dplyr,caret,PRROC)
 CC <- fread(input = "creditcard.csv")
